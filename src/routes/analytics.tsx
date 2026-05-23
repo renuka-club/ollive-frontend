@@ -21,39 +21,47 @@ function AnalyticsPage() {
     (async () => {
       setLoading(true);
       try {
-        const [s, l] = await Promise.all([
-          getAnalyticsSummary().catch(() => ({ data: {} })),
-          getLogs(200).catch(() => ({ data: [] })),
+        const [s, l] = await Promise.allSettled([
+          getAnalyticsSummary(),
+          getLogs(200),
         ]);
-        setSummary((s.data as any) || {});
-        setLogs(Array.isArray(l.data) ? l.data : []);
+        // getAnalyticsSummary returns {data: AnalyticsSummary} (backend wrapper)
+        const summaryBody = s.status === 'fulfilled' ? s.value : null;
+        setSummary((summaryBody as any)?.data ?? summaryBody ?? {});
+        // getLogs returns {data: InferenceLog[]} (backend wrapper)
+        const logsBody = l.status === 'fulfilled' ? l.value : null;
+        const logsArr = (logsBody as any)?.data ?? logsBody;
+        setLogs(Array.isArray(logsArr) ? logsArr : []);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
+  const safeLogs = logs ?? [];
+
   const computed = useMemo(() => {
-    const total = summary?.total_inferences ?? logs.length;
+    const total = summary?.total_inferences ?? safeLogs.length;
     const avg = summary?.avg_latency_ms ??
-      (logs.length ? Math.round(logs.reduce((a, l) => a + (l.latency_ms || 0), 0) / logs.length) : 0);
-    const tokens = summary?.total_tokens ?? logs.reduce((a, l) => a + (l.total_tokens || 0), 0);
-    const errors = logs.filter((l) => l.status === 'error').length;
-    const errRate = summary?.error_rate ?? (logs.length ? (errors / logs.length) * 100 : 0);
+      (safeLogs.length ? Math.round(safeLogs.reduce((a, l) => a + (l.latency_ms || 0), 0) / safeLogs.length) : 0);
+    const tokens = summary?.total_tokens ?? safeLogs.reduce((a, l) => a + (l.total_tokens || 0), 0);
+    const errors = safeLogs.filter((l) => l.status === 'error').length;
+    const errRate = summary?.error_rate ?? (safeLogs.length ? (errors / safeLogs.length) * 100 : 0);
     return { total, avg, tokens, errRate };
-  }, [summary, logs]);
+  }, [summary, safeLogs]);
 
   const latencyData = useMemo(
-    () => logs.slice(0, 50).slice().reverse().map((l, i) => ({
+    () => safeLogs.slice(0, 50).slice().reverse().map((l, i) => ({
       idx: i, latency: l.latency_ms, model: l.model, ts: l.created_at,
     })),
-    [logs]
+    [safeLogs]
   );
 
   const tokensByConv = useMemo(() => {
     const map = new Map<string, { prompt: number; completion: number; total: number }>();
-    for (const l of logs) {
+    for (const l of safeLogs) {
       const k = l.conversation_id;
+      if (!k) continue; // skip logs where conversation was deleted
       const cur = map.get(k) || { prompt: 0, completion: 0, total: 0 };
       cur.prompt += l.prompt_tokens || 0;
       cur.completion += l.completion_tokens || 0;
@@ -61,19 +69,19 @@ function AnalyticsPage() {
       map.set(k, cur);
     }
     return Array.from(map.entries())
-      .map(([id, v]) => ({ id: id.slice(0, 8), full: id, ...v }))
+      .map(([id, v]) => ({ id: (id ?? '').slice(0, 8), full: id ?? '', ...v }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 10);
-  }, [logs]);
+  }, [safeLogs]);
 
   const statusDist = useMemo(() => {
-    const success = logs.filter((l) => l.status === 'success').length;
-    const error = logs.filter((l) => l.status === 'error').length;
+    const success = safeLogs.filter((l) => l.status === 'success').length;
+    const error = safeLogs.filter((l) => l.status === 'error').length;
     return [
       { name: 'success', value: success, fill: '#22c55e' },
       { name: 'error', value: error, fill: '#ef4444' },
     ];
-  }, [logs]);
+  }, [safeLogs]);
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto space-y-6">
@@ -180,7 +188,7 @@ function AnalyticsPage() {
             {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
           </div>
         ) : (
-          <LogsTable logs={logs.slice(0, 20)} />
+          <LogsTable logs={safeLogs.slice(0, 20)} />
         )}
       </div>
     </div>
